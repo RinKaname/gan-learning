@@ -1,0 +1,16 @@
+
+# Exclude data and large files
+data/
+datasets/
+training_data/
+training_checkpoints/
+*.zip
+*.h5
+*.pth
+*.pkl
+*.npy
+*.tfrecord
+*.data-*
+*.index
+checkpoint/
+checkpoint
