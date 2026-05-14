@@ -116,3 +116,33 @@ The `LAMBDA_DFM` at `10.0` is crushing the adversarial signal.
 ### Step 5: Regularize the Discriminator Denoiser
 The discriminator's denoiser might be outputting blurry targets if it overfits to the noise.
 - **Action:** Add a small amount of Dropout or weight decay specifically to the `denoiser` network in `dtp_discriminator` to ensure the generated targets remain structurally sharp.
+## Post-Mortem: The Whiteout Collapse
+
+The model collapsed completely into a pure white grid. This is a classic symptom of **activation saturation**.
+
+In your `dtp_generator`, the final layer uses a `tanh` activation, which bounds the output between `[-1.0, 1.0]`. When plotting the image, you use:
+`img = (predictions[i, :, :, :] + 1.0) / 2.0`
+A pure white image means the array `img` is filled entirely with `1.0`. For `img` to equal `1.0`, the generator's `tanh` output must be saturated at exactly `+1.0` everywhere.
+
+### Mathematical Autopsy
+Why did the network push all its weights to output extreme positive values?
+
+**1. The Overwhelming DFM Penalty (Confirmed)**
+We suspected this in the Phase 5 critique, and the whiteout confirms it. Your DFM loss is calculated as:
+`dfm_loss = tf.reduce_mean(tf.square(real_images - denoised_real))` (multiplied by `LAMBDA_DFM = 10.0`).
+Then, the top-level target $T_{img}$ is the output of the denoiser:
+`T_img = tf.stop_gradient(denoised_fake)`
+And the target pull loss is:
+`target_pull_loss = tf.reduce_mean(tf.square(generated_images - T_img))` (also multiplied by `LAMBDA_DFM = 10.0`).
+
+If the denoiser (`denoised_fake`) outputs a large positive value (e.g., trying to reconstruct the brightness of the training images but overshooting due to the noise injection), the generator receives a massive gradient (scaled by 10) screaming: "Make the pixels brighter!"
+Because `LAMBDA_DFM` is so huge, it completely overrides the discriminator's gentle warning of "Hey, this is starting to look fake." The generator just obediently blasts its final layer weights to positive infinity, pegging the `tanh` activation to `1.0`.
+
+**2. The DTP Target Escalation**
+In standard backpropagation, gradients usually shrink as they flow backward. In Difference Target Propagation, targets are pushed backward:
+$T_{i-1} = g(T_i) + x_{i-1} - g(f(x_{i-1}))$
+If the inverse mapping $g$ is poorly initialized (as we discussed in the Phase 6 plan) or is struggling to invert the non-linearity, the term $g(T_i) - g(f(x_{i-1}))$ doesn't cancel out cleanly. Instead, it adds a large mathematical error vector to the target $x_{i-1}$.
+Layer by layer, as you push targets downward ($T_4 \rightarrow T_3 \rightarrow T_2 \rightarrow T_1$), this error accumulates and magnifies. The targets at the bottom layers become impossibly large. The generator weights explode trying to hit those targets, resulting in catastrophic collapse (the whiteout).
+
+### The Diagnosis
+The whiteout is the final stage of the disease we diagnosed earlier. The unconstrained, overly-weighted DFM target combined with the mathematically garbled inverse mappings caused an exponential blowup in target values, pegging your generator's output layer to its absolute maximum limit. The Phase 6 Action Plan (fixing the inverse capacity, dropping LAMBDA_DFM, and implementing a warm-up) is exactly the medicine required to fix this.
