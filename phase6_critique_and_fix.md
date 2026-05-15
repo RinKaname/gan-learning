@@ -48,3 +48,20 @@ The Discriminator is outpacing the Inverse mappings.
 ### Fix 3: Strict Target Clamping
 We cannot allow the corrupted targets to flow backward through the network, magnifying errors at every layer.
 - **Action:** Explicitly clamp the calculated targets in the DTP step. Wrap the DFM top-level target and intermediate targets in `tf.clip_by_value(target, -1.0, 1.0)` to mathematically guarantee they stay within the valid image/feature space range.
+
+## Update: The Necessity of Inverse Warmup
+
+After applying Target Clamping, the model still collapses to a Whiteout. This reveals a deeper structural flaw inherent to Difference Target Propagation: **Un-trained Inverse Mappings act as unstable multipliers.**
+
+Even if the top-level target $T_4$ is perfectly clamped to `[-1.0, 1.0]`, it must be projected downward:
+$T_3 = g_4(T_4) + h_3 - g_4(f_4(h_3))$
+
+When the network initializes, the inverse mapping $g$ is completely random. It has not yet learned to be the true inverse of $f$. When you pass a signal through a random neural network, the variance of the output expands. If $g_4$ accidentally multiplies its input by `1.5`, then $T_3$ becomes $\pm 1.5$. When passed through $g_3$, it might become $\pm 2.25$.
+
+By the time the target reaches the bottom layers, the numerical value has exploded, pulling the generator weights to infinity (the Whiteout Collapse).
+
+### Fix 4: Inverse Warmup (The Final Missing Piece)
+You cannot use a compass while you are still building it. The Inverse maps must be given time to learn to be true local inverses *before* they are trusted to propagate targets for the forward pass.
+
+- **Action:** We must implement an **Inverse Warmup**. The most mathematically sound approach without writing complex custom training loops is to dynamically scale the target pull `ETA_TARGET`. For the first few epochs, `ETA_TARGET` should be `0.0` or extremely small. This allows the inverse networks to train via their local MSE loss (`inv_loss`) while the forward generator weights remain safely anchored.
+- **Action:** Increase `LAMBDA_INV` significantly (e.g., from `1.0` to `5.0`) to force the inverse mappings to converge to true mathematical inverses as rapidly as possible.
