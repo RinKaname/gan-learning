@@ -1,10 +1,14 @@
 # Phase 7 Research Notes: Target Escalation & Feedback Oscillation
 
-## Observation
-As of Epoch 10, the DTP-GAN has shifted from generating complex "muddy grid" patterns (Epochs 1-5) into a **Whiteout Collapse** (pure white output). This follows a brief period of **Blackout Collapse** around Epoch 6.
+## Empirical Observation: The ETA Tipping Point
+Based on recent training logs, a critical structural flip was observed directly correlated to the dynamic `ETA_TARGET` parameter:
+*   At **Epoch 6 (`ETA = 0.40`)**, the generated images collapsed into pure black (**Blackout**).
+*   At **Epoch 7-10 (`ETA = 0.50`)**, the generated images violently reversed and collapsed into pure white (**Whiteout**).
+
+This proves that the collapse is not merely a slow, compounding error, but a violent **Optimization Oscillation**. The target update step size (`ETA = 0.50`) is far too aggressive for the highly non-linear, compounded space of the recursive DTP architecture. Instead of smoothly descending the loss landscape, the generator is over-correcting, jumping from a saturated negative `tanh` state (-1.0) completely past the data manifold and slamming into a saturated positive `tanh` state (+1.0). This is the architectural equivalent of the "Dying ReLU" problem, where massive gradient updates push the network into an irreversible, saturated mathematical space.
 
 ## Diagnosis: Target Escalation & Oscillation
-While the structural safety nets implemented in Phase 6 (Top-Level Target Clamping, Label Smoothing, TTUR) successfully prevented explosive `NaN` corruption, the network is now suffering from a deeper systemic issue inherent to Difference Target Propagation (DTP): **Target Escalation**.
+While the structural safety nets implemented in Phase 6 (Top-Level Target Clamping, Label Smoothing, TTUR) successfully prevented the immediate `NaN` (Not a Number) gradient explosion, the network is now suffering from a deeper systemic issue inherent to recursive Difference Target Propagation (DTP): **Target Escalation**.
 
 1.  **ETA_TARGET Engagement:** At Epoch 3, the `ETA_TARGET` begins ramping up, meaning the generator starts adjusting its weights based on the targets propagated backward by the localized inverse autoencoders.
 2.  **Inverse Compounding Error:** The localized inverse networks (`predict_back_v2`) are non-linear approximations of the true inverse function. If an inverse mapping possesses a slight numerical bias (e.g., tending to add +0.1 to activations), this error acts as a geometric multiplier.
@@ -27,7 +31,9 @@ To stabilize the internal dynamics of the DTP architecture, research the followi
     *   Investigate asymmetric learning rates: configuring the local inverse optimizers to take larger or more frequent update steps relative to the forward generator optimizers.
 *   **Research Question:** How can we mathematically verify that an inverse mapping has sufficiently converged before engaging the forward target propagation?
 
-### 3. Localized Target Gradient Clipping (The Optimization Fix)
-*   **Theory:** Even with clamped targets and accurate inverses, the calculated local gradient (`grad_h = tape.gradient(local_loss, h)`) can still spike aggressively if the requested target `T` is drastically different from the current activation `h`.
-*   **Implementation Strategy:** Apply local gradient clipping specifically to the derivative before updating the local target calculation: `T = h - ETA * tf.clip_by_norm(grad_h, CLIP_NORM)`. This guarantees that the generator takes smooth, bounded steps toward the requested representation per iteration, mitigating severe oscillations.
-*   **Research Question:** Does localized gradient clipping restrict the network's ability to learn complex, high-frequency features in standard DTP setups?
+### 3. Target Step Capping and Gradient Clipping (The Optimization Fix)
+*   **Theory:** The empirical observation that the network flips from black to white between `ETA = 0.40` and `ETA = 0.50` proves that the localized step sizes are causing violent over-correction.
+*   **Implementation Strategy:**
+    1.  **ETA Capping:** The `ETA_TARGET` ramp schedule is too aggressive. It must be capped at a much lower threshold (e.g., maximum `0.10` or `0.20`) where the network was historically stable and generating "muddy grids".
+    2.  **Gradient Clipping on Target Calculation:** Apply `tf.clip_by_norm` directly to the local derivative *before* it multiplies with `ETA`: `T = h - ETA * tf.clip_by_norm(grad_h, CLIP_NORM)`. This guarantees that even if the top-level discriminator requests a massive color inversion, the hidden layers are strictly bounded in how far they can jump per epoch.
+*   **Research Question:** Does heavily clipping localized gradients permanently restrict the network's capacity to learn the high-frequency structural details required for the complex Anime Face dataset?
